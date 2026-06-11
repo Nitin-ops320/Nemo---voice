@@ -291,7 +291,7 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
                     })
                 }
 
-                val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=$apiKey"
+                val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$apiKey"
                 val request = Request.Builder()
                     .url(url)
                     .post(requestBody.toString().toRequestBody("application/json".toMediaType()))
