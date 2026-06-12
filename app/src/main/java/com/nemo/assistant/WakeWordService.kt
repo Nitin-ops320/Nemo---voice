@@ -3,91 +3,132 @@ package com.nemo.assistant
 import android.app.*
 import android.content.Intent
 import android.os.Build
-import android.os.Bundle
-import android.os.Handler
 import android.os.IBinder
-import android.os.Looper
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
 import androidx.core.app.NotificationCompat
-import java.util.Locale
+import org.json.JSONObject
+import org.vosk.Model
+import org.vosk.Recognizer
+import org.vosk.android.RecognitionListener
+import org.vosk.android.SpeechService
+import org.vosk.android.StorageService
+import java.io.File
+import java.io.FileOutputStream
+import java.net.URL
+import java.util.zip.ZipInputStream
 
 class WakeWordService : Service() {
 
-    private var recognizer: SpeechRecognizer? = null
-    private val handler = Handler(Looper.getMainLooper())
-    private var isRunning = true
-
+    private var model: Model? = null
+    private var speechService: SpeechService? = null
     private val CHANNEL_ID = "nemo_wake_channel"
     private val NOTIF_ID = 2
+
+    private val MODEL_URL = "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip"
+    private val MODEL_DIR_NAME = "vosk-model-small-en-us-0.15"
 
     override fun onCreate() {
         super.onCreate()
         createChannel()
-        startForeground(NOTIF_ID, buildNotification())
-        startListeningLoop()
+        startForeground(NOTIF_ID, buildNotification("Setting up Nemo's ears..."))
+        setupModel()
     }
 
-    private fun startListeningLoop() {
-        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
-            stopSelf()
-            return
-        }
-
-        recognizer = SpeechRecognizer.createSpeechRecognizer(this)
-
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
-            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
-        }
-
-        recognizer?.setRecognitionListener(object : RecognitionListener {
-            override fun onReadyForSpeech(params: Bundle?) {}
-            override fun onBeginningOfSpeech() {}
-            override fun onRmsChanged(rmsdB: Float) {}
-            override fun onBufferReceived(buffer: ByteArray?) {}
-            override fun onEndOfSpeech() {}
-
-            override fun onResults(results: Bundle?) {
-                val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                val text = matches?.firstOrNull()?.lowercase(Locale.getDefault()) ?: ""
-                if (text.contains("jarvis") || text.contains("nemo")) {
-                    sendBroadcast(Intent("com.nemo.assistant.WAKE"))
-                    // Pause briefly so it doesn't immediately re-trigger on its own response
-                    handler.postDelayed({ restartListening(intent) }, 4000)
-                } else {
-                    restartListening(intent)
+    private fun setupModel() {
+        Thread {
+            try {
+                val modelDir = File(filesDir, MODEL_DIR_NAME)
+                if (!modelDir.exists() || modelDir.listFiles()?.isEmpty() != false) {
+                    downloadAndExtractModel(modelDir)
                 }
+                model = Model(modelDir.absolutePath)
+                startListening()
+            } catch (e: Exception) {
+                updateNotification("Setup failed: ${e.message}")
+                stopSelf()
+            }
+        }.start()
+    }
+
+    private fun downloadAndExtractModel(targetDir: File) {
+        updateNotification("Downloading voice model (~40MB)...")
+        targetDir.mkdirs()
+        val zipFile = File(cacheDir, "vosk-model.zip")
+
+        URL(MODEL_URL).openStream().use { input ->
+            FileOutputStream(zipFile).use { output ->
+                input.copyTo(output)
+            }
+        }
+
+        updateNotification("Extracting voice model...")
+        ZipInputStream(zipFile.inputStream()).use { zis ->
+            var entry = zis.nextEntry
+            while (entry != null) {
+                // Strip the top-level "vosk-model-small-en-us-0.15/" prefix
+                val name = entry.name.substringAfter("/", entry.name)
+                if (name.isNotEmpty()) {
+                    val outFile = File(targetDir, name)
+                    if (entry.isDirectory) {
+                        outFile.mkdirs()
+                    } else {
+                        outFile.parentFile?.mkdirs()
+                        FileOutputStream(outFile).use { fos ->
+                            zis.copyTo(fos)
+                        }
+                    }
+                }
+                zis.closeEntry()
+                entry = zis.nextEntry
+            }
+        }
+        zipFile.delete()
+    }
+
+    private fun startListening() {
+        val rec = Recognizer(model, 16000.0f)
+        speechService = SpeechService(rec, 16000.0f)
+        updateNotification("Listening for \"Jarvis\" or \"Nemo\"")
+
+        speechService?.startListening(object : RecognitionListener {
+            override fun onPartialResult(hypothesis: String?) {
+                checkForWakeWord(hypothesis)
             }
 
-            override fun onError(error: Int) {
-                // ERROR_NO_MATCH / ERROR_SPEECH_TIMEOUT just means silence - restart
-                restartListening(intent)
+            override fun onResult(hypothesis: String?) {
+                checkForWakeWord(hypothesis)
             }
 
-            override fun onPartialResults(partialResults: Bundle?) {}
-            override fun onEvent(eventType: Int, params: Bundle?) {}
+            override fun onFinalResult(hypothesis: String?) {
+                checkForWakeWord(hypothesis)
+            }
+
+            override fun onError(exception: Exception?) {
+                // Restart listening on error
+                speechService?.stop()
+                startListening()
+            }
+
+            override fun onTimeout() {
+                speechService?.stop()
+                startListening()
+            }
         })
-
-        recognizer?.startListening(intent)
     }
 
-    private fun restartListening(intent: Intent) {
-        if (!isRunning) return
-        handler.postDelayed({
-            if (isRunning) {
-                try {
-                    recognizer?.startListening(intent)
-                } catch (e: Exception) {
-                    recognizer?.destroy()
-                    recognizer = SpeechRecognizer.createSpeechRecognizer(this)
-                    startListeningLoop()
-                }
+    private fun checkForWakeWord(hypothesis: String?) {
+        if (hypothesis == null) return
+        try {
+            val json = JSONObject(hypothesis)
+            val text = (json.optString("text", "") + " " + json.optString("partial", "")).lowercase()
+            if (text.contains("jarvis") || text.contains("nemo")) {
+                sendBroadcast(Intent("com.nemo.assistant.WAKE"))
+                // Pause listening briefly so it doesn't re-trigger on Nemo's own reply
+                speechService?.stop()
+                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                    startListening()
+                }, 5000)
             }
-        }, 300)
+        } catch (_: Exception) {}
     }
 
     private fun createChannel() {
@@ -99,20 +140,26 @@ class WakeWordService : Service() {
         }
     }
 
-    private fun buildNotification(): Notification {
+    private fun buildNotification(text: String): Notification {
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Nemo is listening for \"Jarvis\" or \"Nemo\"")
+            .setContentTitle("Nemo")
+            .setContentText(text)
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setPriority(NotificationCompat.PRIORITY_MIN)
             .setOngoing(true)
             .build()
     }
 
+    private fun updateNotification(text: String) {
+        val nm = getSystemService(NotificationManager::class.java)
+        nm.notify(NOTIF_ID, buildNotification(text))
+    }
+
     override fun onDestroy() {
         super.onDestroy()
-        isRunning = false
-        recognizer?.destroy()
-        recognizer = null
+        speechService?.stop()
+        speechService?.shutdown()
+        model?.close()
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
