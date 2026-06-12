@@ -28,7 +28,7 @@
 
         <!-- Overlay service (the floating bubble) -->
         <service
-            android:name=".WakeWordService"
+            android:name=".OverlayService
             android:exported="false"
             android:foregroundServiceType="microphone" />
 
