@@ -1,4 +1,3 @@
-
 package com.nemo.assistant
 
 import android.app.*
@@ -6,11 +5,6 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.*
 import android.os.*
-import android.content.BroadcastReceiver
-import android.content.IntentFilter
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.view.*
 import android.widget.*
@@ -32,13 +26,9 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
     private lateinit var tvStatus: TextView
     private lateinit var etInput: EditText
     private lateinit var btnSend: Button
-    private lateinit var btnMic: ImageButton
     private lateinit var btnClose: ImageButton
 
     private lateinit var tts: TextToSpeech
-    private var speechRecognizer: SpeechRecognizer? = null
-    private var isListening = false
-
     private val httpClient = OkHttpClient()
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
     private val conversationHistory = mutableListOf<JSONObject>()
@@ -51,21 +41,6 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
     private var initialTouchX = 0f
     private var initialTouchY = 0f
     private var panelVisible = false
-    private lateinit var bubbleParams: WindowManager.LayoutParams
-
-    private val wakeReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action == "com.nemo.assistant.WAKE") {
-                if (!panelVisible) {
-                    showPanel(bubbleParams)
-                }
-                tvResponse.text = "I'm listening..."
-                updateStatus("Wake word detected")
-                speakOut("Yes? I'm listening.")
-                Handler(Looper.getMainLooper()).postDelayed({ startListening() }, 1200)
-            }
-        }
-    }
 
     override fun onCreate() {
         super.onCreate()
@@ -73,7 +48,6 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
         tts = TextToSpeech(this, this)
         createNotificationChannel()
         startForeground(NOTIF_ID, buildNotification())
-        registerReceiver(wakeReceiver, IntentFilter("com.nemo.assistant.WAKE"))
         showBubble()
     }
 
@@ -81,7 +55,7 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
         val inflater = LayoutInflater.from(this)
         bubbleView = inflater.inflate(R.layout.overlay_bubble, null)
 
-        bubbleParams = WindowManager.LayoutParams(
+        val bubbleParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
@@ -128,7 +102,6 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
 
     private fun togglePanel(bubbleParams: WindowManager.LayoutParams) {
         if (panelVisible) {
-            stopListening()
             windowManager.removeView(panelView)
             panelVisible = false
         } else {
@@ -139,6 +112,7 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
     private fun showPanel(bubbleParams: WindowManager.LayoutParams) {
         val context = this
 
+        // Build entire panel programmatically - no XML layout issues
         val root = LinearLayout(context).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(40, 32, 40, 32)
@@ -163,7 +137,6 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
             setBackgroundColor(Color.TRANSPARENT)
             layoutParams = LinearLayout.LayoutParams(80, 80)
             setOnClickListener {
-                stopListening()
                 windowManager.removeView(panelView)
                 panelVisible = false
             }
@@ -174,7 +147,7 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
 
         // Status
         tvStatus = TextView(context).apply {
-            text = "Ready — tap mic or type"
+            text = "Ready — type below and tap Send"
             textSize = 11f
             setTextColor(Color.parseColor("#00AA88"))
             typeface = android.graphics.Typeface.MONOSPACE
@@ -207,23 +180,8 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-
-        // Mic button
-        btnMic = ImageButton(context).apply {
-            setImageResource(android.R.drawable.ic_btn_speak_now)
-            setBackgroundColor(Color.parseColor("#0D1530"))
-            setColorFilter(Color.parseColor("#00F5FF"))
-            layoutParams = LinearLayout.LayoutParams(110, 110).apply {
-                setMargins(0, 0, 16, 0)
-            }
-            setPadding(20, 20, 20, 20)
-            setOnClickListener {
-                if (isListening) stopListening() else startListening()
-            }
-        }
-
         etInput = EditText(context).apply {
-            hint = "Type or tap mic…"
+            hint = "Type your message…"
             setHintTextColor(Color.parseColor("#555577"))
             setTextColor(Color.parseColor("#CCCCDD"))
             textSize = 13f
@@ -251,11 +209,11 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
             )
             setOnClickListener { sendMessage() }
         }
-        inputRow.addView(btnMic)
         inputRow.addView(etInput)
         inputRow.addView(btnSend)
         root.addView(inputRow)
 
+        // Wrap in ScrollView for response
         val displayMetrics = resources.displayMetrics
         val screenWidth = displayMetrics.widthPixels
         val panelWidth = (screenWidth * 0.88).toInt()
@@ -283,97 +241,11 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
         panelView = root
         windowManager.addView(panelView, panelParams)
         panelVisible = true
-    }
 
-    // ── VOICE INPUT (Android built-in SpeechRecognizer) ─────────────────
-    private fun startListening() {
-        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
-            updateStatus("Speech recognition not available on this device")
-            return
-        }
-
-        speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-        }
-
-        speechRecognizer?.setRecognitionListener(object : RecognitionListener {
-            override fun onReadyForSpeech(params: Bundle?) {
-                isListening = true
-                updateMicIcon(true)
-                updateStatus("Listening… speak now")
-            }
-
-            override fun onBeginningOfSpeech() {}
-
-            override fun onRmsChanged(rmsdB: Float) {}
-
-            override fun onBufferReceived(buffer: ByteArray?) {}
-
-            override fun onEndOfSpeech() {
-                updateStatus("Processing…")
-            }
-
-            override fun onError(error: Int) {
-                isListening = false
-                updateMicIcon(false)
-                val msg = when (error) {
-                    SpeechRecognizer.ERROR_NO_MATCH -> "Didn't catch that. Try again."
-                    SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "No speech detected."
-                    SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "Microphone permission needed."
-                    else -> "Mic error ($error). Try again."
-                }
-                updateStatus(msg)
-                speechRecognizer?.destroy()
-                speechRecognizer = null
-            }
-
-            override fun onResults(results: Bundle?) {
-                isListening = false
-                updateMicIcon(false)
-                val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                val text = matches?.firstOrNull()?.trim() ?: ""
-                if (text.isNotEmpty()) {
-                    etInput.setText(text)
-                    sendMessage()
-                } else {
-                    updateStatus("Didn't catch that. Try again.")
-                }
-                speechRecognizer?.destroy()
-                speechRecognizer = null
-            }
-
-            override fun onPartialResults(partialResults: Bundle?) {
-                val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
-                val text = matches?.firstOrNull()
-                if (!text.isNullOrEmpty()) {
-                    updateStatus("Hearing: $text")
-                }
-            }
-
-            override fun onEvent(eventType: Int, params: Bundle?) {}
-        })
-
-        speechRecognizer?.startListening(intent)
-    }
-
-    private fun stopListening() {
-        speechRecognizer?.stopListening()
-        speechRecognizer?.destroy()
-        speechRecognizer = null
-        isListening = false
-        updateMicIcon(false)
-    }
-
-    private fun updateMicIcon(listening: Boolean) {
-        if (panelVisible && ::btnMic.isInitialized) {
-            btnMic.alpha = if (listening) 1.0f else 0.7f
-            btnMic.setColorFilter(
-                if (listening) Color.parseColor("#FF4466") else Color.parseColor("#00F5FF")
-            )
-        }
+        // Focus input
+        Handler(Looper.getMainLooper()).postDelayed({
+            etInput.requestFocus()
+        }, 200)
     }
 
     private fun sendMessage() {
@@ -418,7 +290,7 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
                     })
                 }
 
-                val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=$apiKey"
+                val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=$apiKey"
                 val request = Request.Builder()
                     .url(url)
                     .post(requestBody.toString().toRequestBody("application/json".toMediaType()))
@@ -456,7 +328,7 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
 
                     withContext(Dispatchers.Main) {
                         tvResponse.text = reply
-                        updateStatus("Tap mic or type to continue")
+                        updateStatus("Tap Send to reply")
                         speakOut(reply)
                     }
                 }
@@ -510,8 +382,6 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
     override fun onDestroy() {
         super.onDestroy()
         scope.cancel()
-        stopListening()
-        try { unregisterReceiver(wakeReceiver) } catch (_: Exception) {}
         tts.shutdown()
         try { windowManager.removeView(bubbleView) } catch (_: Exception) {}
         if (panelVisible) try { windowManager.removeView(panelView) } catch (_: Exception) {}
