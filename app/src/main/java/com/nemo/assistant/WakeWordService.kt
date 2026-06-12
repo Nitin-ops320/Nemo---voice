@@ -1,18 +1,24 @@
 package com.nemo.assistant
 
 import android.app.*
-import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.Bundle
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 import androidx.core.app.NotificationCompat
-import ai.picovoice.porcupine.Porcupine
-import ai.picovoice.porcupine.PorcupineManager
-import ai.picovoice.porcupine.PorcupineManagerCallback
+import java.util.Locale
 
 class WakeWordService : Service() {
 
-    private var porcupineManager: PorcupineManager? = null
+    private var recognizer: SpeechRecognizer? = null
+    private val handler = Handler(Looper.getMainLooper())
+    private var isRunning = true
+
     private val CHANNEL_ID = "nemo_wake_channel"
     private val NOTIF_ID = 2
 
@@ -20,29 +26,68 @@ class WakeWordService : Service() {
         super.onCreate()
         createChannel()
         startForeground(NOTIF_ID, buildNotification())
-        startPorcupine()
+        startListeningLoop()
     }
 
-    private fun startPorcupine() {
-        val prefs = getSharedPreferences("nemo_prefs", Context.MODE_PRIVATE)
-        val accessKey = prefs.getString("picovoice_key", "") ?: ""
-        if (accessKey.isEmpty()) {
+    private fun startListeningLoop() {
+        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
             stopSelf()
             return
         }
-        try {
-            porcupineManager = PorcupineManager.Builder()
-                .setAccessKey(accessKey)
-                .setKeyword(Porcupine.BuiltInKeyword.JARVIS)
-                .build(applicationContext, object : PorcupineManagerCallback {
-                    override fun invoke(keywordIndex: Int) {
-                        sendBroadcast(Intent("com.nemo.assistant.WAKE"))
-                    }
-                })
-            porcupineManager?.start()
-        } catch (e: Exception) {
-            stopSelf()
+
+        recognizer = SpeechRecognizer.createSpeechRecognizer(this)
+
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
         }
+
+        recognizer?.setRecognitionListener(object : RecognitionListener {
+            override fun onReadyForSpeech(params: Bundle?) {}
+            override fun onBeginningOfSpeech() {}
+            override fun onRmsChanged(rmsdB: Float) {}
+            override fun onBufferReceived(buffer: ByteArray?) {}
+            override fun onEndOfSpeech() {}
+
+            override fun onResults(results: Bundle?) {
+                val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                val text = matches?.firstOrNull()?.lowercase(Locale.getDefault()) ?: ""
+                if (text.contains("jarvis") || text.contains("nemo")) {
+                    sendBroadcast(Intent("com.nemo.assistant.WAKE"))
+                    // Pause briefly so it doesn't immediately re-trigger on its own response
+                    handler.postDelayed({ restartListening(intent) }, 4000)
+                } else {
+                    restartListening(intent)
+                }
+            }
+
+            override fun onError(error: Int) {
+                // ERROR_NO_MATCH / ERROR_SPEECH_TIMEOUT just means silence - restart
+                restartListening(intent)
+            }
+
+            override fun onPartialResults(partialResults: Bundle?) {}
+            override fun onEvent(eventType: Int, params: Bundle?) {}
+        })
+
+        recognizer?.startListening(intent)
+    }
+
+    private fun restartListening(intent: Intent) {
+        if (!isRunning) return
+        handler.postDelayed({
+            if (isRunning) {
+                try {
+                    recognizer?.startListening(intent)
+                } catch (e: Exception) {
+                    recognizer?.destroy()
+                    recognizer = SpeechRecognizer.createSpeechRecognizer(this)
+                    startListeningLoop()
+                }
+            }
+        }, 300)
     }
 
     private fun createChannel() {
@@ -56,7 +101,7 @@ class WakeWordService : Service() {
 
     private fun buildNotification(): Notification {
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Nemo is listening for \"Jarvis\"")
+            .setContentTitle("Nemo is listening for \"Jarvis\" or \"Nemo\"")
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setPriority(NotificationCompat.PRIORITY_MIN)
             .setOngoing(true)
@@ -65,10 +110,10 @@ class WakeWordService : Service() {
 
     override fun onDestroy() {
         super.onDestroy()
-        porcupineManager?.stop()
-        porcupineManager?.delete()
+        isRunning = false
+        recognizer?.destroy()
+        recognizer = null
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
 }
-
