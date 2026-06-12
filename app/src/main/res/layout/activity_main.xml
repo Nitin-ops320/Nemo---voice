@@ -70,6 +70,31 @@
                 android:padding="12dp"
                 android:inputType="textPassword"
                 android:layout_marginBottom="12dp" />
+            
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="PICOVOICE KEY (for wake word, optional)"
+                android:textSize="11sp"
+                android:textColor="#00F5FF"
+                android:letterSpacing="0.1"
+                android:fontFamily="monospace"
+                android:layout_marginTop="8dp"
+                android:layout_marginBottom="8dp" />
+
+            <EditText
+                android:id="@+id/etPicovoiceKey"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="Paste Picovoice AccessKey (optional)"
+                android:hintTextColor="#555577"
+                android:textColor="#CCCCDD"
+                android:textSize="13sp"
+                android:fontFamily="monospace"
+                android:background="#0D0D1F"
+                android:padding="12dp"
+                android:inputType="textPassword"
+                android:layout_marginBottom="12dp" />
 
             <Button
                 android:id="@+id/btnSaveKey"
