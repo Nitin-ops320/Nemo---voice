@@ -1,4 +1,3 @@
-
 package com.nemo.assistant
 
 import android.app.*
@@ -32,6 +31,7 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
     private lateinit var btnSend: Button
     private lateinit var btnMic: ImageButton
     private lateinit var btnClose: ImageButton
+    private lateinit var btnReadScreen: Button  // ← Layer 2 button
 
     private lateinit var tts: TextToSpeech
     private var speechRecognizer: SpeechRecognizer? = null
@@ -184,13 +184,38 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
         }
         root.addView(divider)
 
+        // ── READ SCREEN BUTTON (Layer 2) ──────────────────────────────────
+        btnReadScreen = Button(context).apply {
+            text = "👁  Read My Screen"
+            setTextColor(Color.parseColor("#0A0A1A"))
+            textSize = 13f
+            typeface = android.graphics.Typeface.MONOSPACE
+            setBackgroundColor(Color.parseColor("#00CCAA"))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(0, 0, 0, 20) }
+            setOnClickListener {
+                val screenText = NemoAccessibilityService.instance?.readScreen()
+                if (screenText.isNullOrBlank()) {
+                    updateStatus("Nothing to read — enable Accessibility for Nemo in Settings")
+                    tvResponse.text = "Go to Settings → Accessibility → Nemo Screen Reader → Turn ON"
+                } else {
+                    updateStatus("Reading screen…")
+                    tvResponse.text = "Reading screen…"
+                    askGemini("Here is what is currently on my Android screen:\n\n$screenText\n\nPlease summarize what you see in 2-3 sentences.")
+                }
+            }
+        }
+        root.addView(btnReadScreen)
+        // ─────────────────────────────────────────────────────────────────
+
         // Input row
         val inputRow = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
 
-        // Mic button
         btnMic = ImageButton(context).apply {
             setImageResource(android.R.drawable.ic_btn_speak_now)
             setBackgroundColor(Color.parseColor("#0D1530"))
@@ -221,6 +246,7 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
                 } else false
             }
         }
+
         btnSend = Button(context).apply {
             text = "SEND"
             setTextColor(Color.parseColor("#0A0A1A"))
@@ -233,6 +259,7 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
             )
             setOnClickListener { sendMessage() }
         }
+
         inputRow.addView(btnMic)
         inputRow.addView(etInput)
         inputRow.addView(btnSend)
@@ -267,7 +294,7 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
         panelVisible = true
     }
 
-    // ── VOICE INPUT (Android built-in SpeechRecognizer) ─────────────────
+    // ── VOICE INPUT ───────────────────────────────────────────────────────
     private fun startListening() {
         if (!SpeechRecognizer.isRecognitionAvailable(this)) {
             updateStatus("Speech recognition not available on this device")
@@ -287,17 +314,10 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
                 updateMicIcon(true)
                 updateStatus("Listening… speak now")
             }
-
             override fun onBeginningOfSpeech() {}
-
             override fun onRmsChanged(rmsdB: Float) {}
-
             override fun onBufferReceived(buffer: ByteArray?) {}
-
-            override fun onEndOfSpeech() {
-                updateStatus("Processing…")
-            }
-
+            override fun onEndOfSpeech() { updateStatus("Processing…") }
             override fun onError(error: Int) {
                 isListening = false
                 updateMicIcon(false)
@@ -311,7 +331,6 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
                 speechRecognizer?.destroy()
                 speechRecognizer = null
             }
-
             override fun onResults(results: Bundle?) {
                 isListening = false
                 updateMicIcon(false)
@@ -326,15 +345,11 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
                 speechRecognizer?.destroy()
                 speechRecognizer = null
             }
-
             override fun onPartialResults(partialResults: Bundle?) {
                 val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                 val text = matches?.firstOrNull()
-                if (!text.isNullOrEmpty()) {
-                    updateStatus("Hearing: $text")
-                }
+                if (!text.isNullOrEmpty()) updateStatus("Hearing: $text")
             }
-
             override fun onEvent(eventType: Int, params: Bundle?) {}
         })
 
@@ -367,6 +382,7 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
         askGemini(text)
     }
 
+    // ── GEMINI API ────────────────────────────────────────────────────────
     private fun askGemini(userText: String) {
         val prefs = getSharedPreferences("nemo_prefs", Context.MODE_PRIVATE)
         val apiKey = prefs.getString("gemini_api_key", "") ?: ""
