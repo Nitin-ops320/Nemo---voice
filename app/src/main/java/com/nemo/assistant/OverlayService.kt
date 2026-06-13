@@ -196,17 +196,29 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
                 LinearLayout.LayoutParams.WRAP_CONTENT
             ).apply { setMargins(0, 0, 0, 20) }
             setOnClickListener {
-                val screenText = NemoAccessibilityService.instance?.readScreen()
-                if (screenText.isNullOrBlank()) {
-                    updateStatus("Nothing to read — enable Accessibility for Nemo in Settings")
-                    tvResponse.text = "Go to Settings → Accessibility → Nemo Screen Reader → Turn ON"
-                } else {
-                    updateStatus("Reading screen…")
-                    tvResponse.text = "Reading screen…"
-                    askGemini("Here is what is currently on my Android screen:\n\n$screenText\n\nPlease summarize what you see in 2-3 sentences.")
-                }
-            }
+    // Hide panel first so we can read the real screen underneath
+    windowManager.removeView(panelView)
+    panelVisible = false
+
+    // Wait 1 second for panel to disappear, then read
+    scope.launch {
+        delay(1000)
+        val screenText = NemoAccessibilityService.instance?.readScreen()
+
+        if (screenText.isNullOrBlank()) {
+            // Show panel again with error
+            showPanel(bubbleParams)
+            updateStatus("Nothing to read — enable Accessibility for Nemo in Settings")
+            tvResponse.text = "Go to Settings → Accessibility → Nemo Screen Reader → Turn ON"
+        } else {
+            // Show panel again with result
+            showPanel(bubbleParams)
+            updateStatus("Reading screen…")
+            tvResponse.text = "Reading screen…"
+            askGemini("Here is what is currently on my Android screen:\n\n$screenText\n\nPlease summarize what you see in 2-3 sentences.")
         }
+    }
+}
         root.addView(btnReadScreen)
         // ─────────────────────────────────────────────────────────────────
 
