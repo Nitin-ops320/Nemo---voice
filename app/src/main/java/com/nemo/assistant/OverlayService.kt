@@ -31,7 +31,7 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
     private lateinit var btnSend: Button
     private lateinit var btnMic: ImageButton
     private lateinit var btnClose: ImageButton
-    private lateinit var btnReadScreen: Button  // ← Layer 2 button
+    private lateinit var btnReadScreen: Button
 
     private lateinit var tts: TextToSpeech
     private var speechRecognizer: SpeechRecognizer? = null
@@ -49,6 +49,7 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
     private var initialTouchX = 0f
     private var initialTouchY = 0f
     private var panelVisible = false
+    private var savedBubbleParams: WindowManager.LayoutParams? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -77,6 +78,8 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
             x = 0
             y = 200
         }
+
+        savedBubbleParams = bubbleParams
 
         bubbleView.setOnTouchListener { _, event ->
             when (event.action) {
@@ -184,7 +187,7 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
         }
         root.addView(divider)
 
-        // ── READ SCREEN BUTTON (Layer 2) ──────────────────────────────────
+        // READ SCREEN BUTTON
         btnReadScreen = Button(context).apply {
             text = "👁  Read My Screen"
             setTextColor(Color.parseColor("#0A0A1A"))
@@ -196,31 +199,26 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
                 LinearLayout.LayoutParams.WRAP_CONTENT
             ).apply { setMargins(0, 0, 0, 20) }
             setOnClickListener {
-    // Hide panel first so we can read the real screen underneath
-    windowManager.removeView(panelView)
-    panelVisible = false
-
-    // Wait 1 second for panel to disappear, then read
-    scope.launch {
-        delay(1000)
-        val screenText = NemoAccessibilityService.instance?.readScreen()
-
-        if (screenText.isNullOrBlank()) {
-            // Show panel again with error
-            showPanel(bubbleParams)
-            updateStatus("Nothing to read — enable Accessibility for Nemo in Settings")
-            tvResponse.text = "Go to Settings → Accessibility → Nemo Screen Reader → Turn ON"
-        } else {
-            // Show panel again with result
-            showPanel(bubbleParams)
-            updateStatus("Reading screen…")
-            tvResponse.text = "Reading screen…"
-            askGemini("Here is what is currently on my Android screen:\n\n$screenText\n\nPlease summarize what you see in 2-3 sentences.")
+                // Hide panel so we read the real screen underneath
+                windowManager.removeView(panelView)
+                panelVisible = false
+                scope.launch {
+                    delay(1000) // wait for panel to disappear
+                    val screenText = NemoAccessibilityService.instance?.readScreen()
+                    val bp = savedBubbleParams ?: bubbleParams
+                    showPanel(bp)
+                    if (screenText.isNullOrBlank()) {
+                        updateStatus("Nothing read — enable Accessibility for Nemo in Settings")
+                        tvResponse.text = "Go to Settings → Accessibility → Nemo Screen Reader → Turn ON"
+                    } else {
+                        updateStatus("Reading screen…")
+                        tvResponse.text = "Reading screen…"
+                        askGemini("Here is what is currently on my Android screen:\n\n$screenText\n\nPlease summarize what you see in 2-3 sentences.")
+                    }
+                }
+            }
         }
-    }
-}
         root.addView(btnReadScreen)
-        // ─────────────────────────────────────────────────────────────────
 
         // Input row
         val inputRow = LinearLayout(context).apply {
@@ -306,20 +304,17 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
         panelVisible = true
     }
 
-    // ── VOICE INPUT ───────────────────────────────────────────────────────
     private fun startListening() {
         if (!SpeechRecognizer.isRecognitionAvailable(this)) {
-            updateStatus("Speech recognition not available on this device")
+            updateStatus("Speech recognition not available")
             return
         }
-
         speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault())
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
         }
-
         speechRecognizer?.setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) {
                 isListening = true
@@ -364,7 +359,6 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
             }
             override fun onEvent(eventType: Int, params: Bundle?) {}
         })
-
         speechRecognizer?.startListening(intent)
     }
 
@@ -394,7 +388,6 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
         askGemini(text)
     }
 
-    // ── GEMINI API ────────────────────────────────────────────────────────
     private fun askGemini(userText: String) {
         val prefs = getSharedPreferences("nemo_prefs", Context.MODE_PRIVATE)
         val apiKey = prefs.getString("gemini_api_key", "") ?: ""
