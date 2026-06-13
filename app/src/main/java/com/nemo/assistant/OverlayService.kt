@@ -246,9 +246,6 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
 
         // READ SCREEN BUTTON
         btnReadScreen = Button(context).apply {
-
-        // READ SCREEN BUTTON
-        btnReadScreen = Button(context).apply {
             text = "👁  Read My Screen"
             setTextColor(Color.parseColor("#0A0A1A"))
             textSize = 13f
