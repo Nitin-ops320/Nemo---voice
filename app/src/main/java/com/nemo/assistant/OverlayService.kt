@@ -187,6 +187,66 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
         }
         root.addView(divider)
 
+        // TAP BY TEXT ROW
+        val tapRow = LinearLayout(context).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(0, 0, 0, 16) }
+        }
+        val etTapText = EditText(context).apply {
+            hint = "Text to tap on screen…"
+            setHintTextColor(Color.parseColor("#555577"))
+            setTextColor(Color.parseColor("#CCCCDD"))
+            textSize = 13f
+            setBackgroundColor(Color.parseColor("#0D0D1F"))
+            setPadding(20, 16, 20, 16)
+            layoutParams = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+                .apply { setMargins(0, 0, 16, 0) }
+        }
+        val btnTap = Button(context).apply {
+            text = "TAP"
+            setTextColor(Color.parseColor("#0A0A1A"))
+            textSize = 12f
+            typeface = android.graphics.Typeface.MONOSPACE
+            setBackgroundColor(Color.parseColor("#FF9900"))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            )
+            setOnClickListener {
+                val tapTarget = etTapText.text.toString().trim()
+                if (tapTarget.isEmpty()) {
+                    updateStatus("Type what text to tap first")
+                    return@setOnClickListener
+                }
+                windowManager.removeView(panelView)
+                panelVisible = false
+                scope.launch {
+                    delay(800)
+                    val success = NemoAccessibilityService.instance?.tapByText(tapTarget)
+                    delay(500)
+                    val bp = savedBubbleParams ?: bubbleParams
+                    showPanel(bp)
+                    if (success == true) {
+                        updateStatus("✅ Tapped '$tapTarget'")
+                        tvResponse.text = "Done! I tapped '$tapTarget' on your screen."
+                    } else {
+                        updateStatus("❌ Couldn't find '$tapTarget' on screen")
+                        tvResponse.text = "I couldn't find '$tapTarget'. Try Read Screen first to see what's visible."
+                    }
+                }
+            }
+        }
+        tapRow.addView(etTapText)
+        tapRow.addView(btnTap)
+        root.addView(tapRow)
+
+        // READ SCREEN BUTTON
+        btnReadScreen = Button(context).apply {
+
         // READ SCREEN BUTTON
         btnReadScreen = Button(context).apply {
             text = "👁  Read My Screen"
