@@ -94,5 +94,24 @@ class NemoAccessibilityService : AccessibilityService() {
 
     fun pullDownNotifications() {
         performGlobalAction(GLOBAL_ACTION_NOTIFICATIONS)
+
+    fun typeText(text: String) {
+        val node = rootInActiveWindow ?: return
+        findFocusedInput(node)?.let { input ->
+            val args = Bundle()
+            args.putCharSequence(android.view.accessibility.AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+            input.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+        }
+    }
+
+    private fun findFocusedInput(node: android.view.accessibility.AccessibilityNodeInfo?): android.view.accessibility.AccessibilityNodeInfo? {
+        node ?: return null
+        if (node.isEditable) return node
+        for (i in 0 until node.childCount) {
+            findFocusedInput(node.getChild(i))?.let { return it }
+        }
+        return null
+    }
+    
     }
 }
