@@ -443,6 +443,22 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
         updateStatus("Thinking…")
         tvResponse.text = "…"
         askGemini(text)
+        private fun openApp(packageName: String) {
+        try {
+            val intent = packageManager.getLaunchIntentForPackage(packageName)
+            if (intent != null) {
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                startActivity(intent)
+                updateStatus("✅ Opened app")
+                tvResponse.text = "Done! Opened the app."
+            } else {
+                updateStatus("❌ App not found: $packageName")
+                tvResponse.text = "I couldn't find that app installed on your phone."
+            }
+        } catch (e: Exception) {
+            updateStatus("❌ Failed to open app")
+        }
+        }
     }
 
     private fun askGemini(userText: String) {
