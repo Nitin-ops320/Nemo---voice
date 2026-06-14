@@ -78,5 +78,21 @@ class NemoAccessibilityService : AccessibilityService() {
             .addStroke(GestureDescription.StrokeDescription(path, 0, 300))
             .build()
         dispatchGesture(gesture, null, null)
+        
+        fun goBack() {
+        performGlobalAction(GLOBAL_ACTION_BACK)
+    }
+
+    fun goHome() {
+        performGlobalAction(GLOBAL_ACTION_HOME)
+    }
+
+    fun showRecents() {
+        performGlobalAction(GLOBAL_ACTION_RECENTS)
+    }
+
+    fun pullDownNotifications() {
+        performGlobalAction(GLOBAL_ACTION_NOTIFICATIONS)
+    }
     }
 }
