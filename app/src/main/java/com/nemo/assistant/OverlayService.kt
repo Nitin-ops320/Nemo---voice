@@ -4,17 +4,11 @@ import android.app.*
 import android.content.Context
 import android.content.Intent
 import android.graphics.*
-import android.hardware.display.DisplayManager
-import android.hardware.display.VirtualDisplay
-import android.media.ImageReader
-import android.media.projection.MediaProjection
-import android.media.projection.MediaProjectionManager
 import android.os.*
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
-import android.util.Base64
 import android.view.*
 import android.widget.*
 import androidx.core.app.NotificationCompat
@@ -24,7 +18,6 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
-import java.io.ByteArrayOutputStream
 import java.util.*
 
 class OverlayService : Service(), TextToSpeech.OnInitListener {
@@ -59,24 +52,6 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
     private var panelVisible = false
     private var savedBubbleParams: WindowManager.LayoutParams? = null
 
-    // MediaProjection for screenshots
-    private var mediaProjection: MediaProjection? = null
-    private var imageReader: ImageReader? = null
-    private var virtualDisplay: VirtualDisplay? = null
-    private var projectionResultCode: Int = 0
-    private var projectionData: Intent? = null
-
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        projectionResultCode = intent?.getIntExtra("result_code", 0) ?: 0
-        projectionData = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            intent?.getParcelableExtra("projection_data", Intent::class.java)
-        } else {
-            @Suppress("DEPRECATION")
-            intent?.getParcelableExtra("projection_data")
-        }
-        return START_NOT_STICKY
-    }
-
     override fun onCreate() {
         super.onCreate()
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
@@ -86,75 +61,8 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
         showBubble()
     }
 
-    private fun initMediaProjection() {
-        if (projectionResultCode == 0 || projectionData == null) return
-        try {
-            val mgr = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-            mediaProjection = mgr.getMediaProjection(projectionResultCode, projectionData!!)
-        } catch (e: Exception) {
-            // projection not available
-        }
-    }
-
-    private fun takeScreenshot(callback: (Bitmap?) -> Unit) {
-        try {
-            if (mediaProjection == null) initMediaProjection()
-            val mp = mediaProjection
-            if (mp == null) { callback(null); return }
-
-            val metrics = resources.displayMetrics
-            val width = metrics.widthPixels
-            val height = metrics.heightPixels
-            val density = metrics.densityDpi
-
-            val reader = ImageReader.newInstance(width, height, android.graphics.PixelFormat.RGBA_8888, 2)
-            imageReader = reader
-
-            virtualDisplay = mp.createVirtualDisplay(
-                "NemoCapture", width, height, density,
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                reader.surface, null, null
-            )
-
-            // Wait for frame
-            Handler(Looper.getMainLooper()).postDelayed({
-                try {
-                    val image = reader.acquireLatestImage()
-                    if (image != null) {
-                        val planes = image.planes
-                        val buffer = planes[0].buffer
-                        val pixelStride = planes[0].pixelStride
-                        val rowStride = planes[0].rowStride
-                        val rowPadding = rowStride - pixelStride * width
-                        val bmp = Bitmap.createBitmap(
-                            width + rowPadding / pixelStride, height, Bitmap.Config.ARGB_8888
-                        )
-                        bmp.copyPixelsFromBuffer(buffer)
-                        image.close()
-                        // Scale down to save bandwidth
-                        val scaled = Bitmap.createScaledBitmap(bmp, width / 2, height / 2, true)
-                        bmp.recycle()
-                        virtualDisplay?.release()
-                        callback(scaled)
-                    } else {
-                        virtualDisplay?.release()
-                        callback(null)
-                    }
-                } catch (e: Exception) {
-                    virtualDisplay?.release()
-                    callback(null)
-                }
-            }, 500)
-        } catch (e: Exception) {
-            callback(null)
-        }
-    }
-
-    private fun bitmapToBase64(bmp: Bitmap): String {
-        val baos = ByteArrayOutputStream()
-        bmp.compress(Bitmap.CompressFormat.JPEG, 70, baos)
-        bmp.recycle()
-        return Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP)
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        return START_NOT_STICKY
     }
 
     private fun showBubble() {
@@ -173,7 +81,6 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
             gravity = Gravity.TOP or Gravity.START
             x = 0; y = 200
         }
-
         savedBubbleParams = bubbleParams
 
         bubbleView.setOnTouchListener { _, event ->
@@ -246,7 +153,7 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
 
         // Status
         tvStatus = TextView(context).apply {
-            text = "Tell me what to do — I'll see your screen"
+            text = "Tell me what to do"
             textSize = 11f
             setTextColor(Color.parseColor("#00AA88"))
             typeface = Typeface.MONOSPACE
@@ -254,9 +161,9 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
         }
         root.addView(tvStatus)
 
-        // Response area
+        // Response
         tvResponse = TextView(context).apply {
-            text = "Say or type a command, I'll look at your screen and act!"
+            text = "Type or say a command. I'll read your screen and act!"
             textSize = 14f
             setTextColor(Color.parseColor("#CCCCDD"))
             setPadding(0, 0, 0, 24)
@@ -354,82 +261,81 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
         val command = etInput.text.toString().trim()
         if (command.isEmpty()) return
         etInput.setText("")
-        updateStatus("Looking at your screen…")
+        updateStatus("Reading your screen…")
         tvResponse.text = "…"
 
-        // Hide panel, take screenshot, then act
+        // Hide panel, read screen text, then ask Gemini to act
         windowManager.removeView(panelView)
         panelVisible = false
 
         scope.launch {
-            delay(700) // let panel disappear
-            takeScreenshot { bitmap ->
-                scope.launch {
-                    val bp = savedBubbleParams!!
-                    showPanel(bp)
-                    if (bitmap == null) {
-                        // No screenshot — fall back to text only
-                        updateStatus("No screen capture — trying text mode…")
-                        askGeminiTextOnly(command)
-                    } else {
-                        updateStatus("Nemo is thinking…")
-                        askGeminiVision(command, bitmap)
-                    }
-                }
-            }
+            delay(600) // let panel disappear
+            val screenText = NemoAccessibilityService.instance?.readScreen() ?: ""
+            val installedApps = getInstalledApps()
+            val bp = savedBubbleParams!!
+            showPanel(bp)
+            updateStatus("Nemo is thinking…")
+            askGeminiWithContext(command, screenText, installedApps)
         }
     }
 
-    // ── GEMINI VISION ─────────────────────────────────────────────────────
-    private fun askGeminiVision(command: String, bitmap: Bitmap) {
+    // ── GET INSTALLED APPS ────────────────────────────────────────────────
+    private fun getInstalledApps(): String {
+        return try {
+            packageManager.getInstalledApplications(0)
+                .filter { packageManager.getLaunchIntentForPackage(it.packageName) != null }
+                .joinToString("\n") {
+                    "${packageManager.getApplicationLabel(it)}: ${it.packageName}"
+                }
+        } catch (e: Exception) { "" }
+    }
+
+    // ── GEMINI WITH SCREEN CONTEXT ────────────────────────────────────────
+    private fun askGeminiWithContext(command: String, screenText: String, installedApps: String) {
         val prefs = getSharedPreferences("nemo_prefs", Context.MODE_PRIVATE)
         val apiKey = prefs.getString("gemini_api_key", "") ?: ""
         if (apiKey.isEmpty()) { updateStatus("No API key set"); return }
 
         scope.launch(Dispatchers.IO) {
             try {
-                val base64Image = bitmapToBase64(bitmap)
-                val screenWidth = resources.displayMetrics.widthPixels
-                val screenHeight = resources.displayMetrics.heightPixels
-
                 val prompt = """
-                    You are controlling an Android phone. The user says: "$command"
+                    You are controlling an Android phone for the user.
+                    User command: "$command"
                     
-                    Look at this screenshot and decide what action to take.
-                    The screen is ${screenWidth}x${screenHeight} pixels.
+                    Current screen text:
+                    $screenText
                     
-                    Reply with ONLY a JSON object:
+                    Installed apps on this device:
+                    $installedApps
+                    
+                    Reply with ONLY a valid JSON object, no extra text:
                     {
-                      "action": "tap" | "open_app" | "go_back" | "go_home" | "scroll_down" | "type_text" | "chat",
-                      "x": 123,
-                      "y": 456,
-                      "text": "text to type if action is type_text, or app package if open_app, or chat reply",
-                      "explanation": "what I see and what I'm doing"
+                      "action": "open_app" | "tap_text" | "go_back" | "go_home" | "scroll_down" | "type_text" | "chat",
+                      "value": "exact package name OR text to tap OR text to type OR chat reply",
+                      "explanation": "one short sentence of what you are doing"
                     }
                     
-                    For "tap": give exact x,y pixel coordinates of what to tap on screen.
-                    For "open_app": put the package name in "text" field.
-                    For "chat": put your reply in "text" field.
-                    Only use "tap" if you can clearly see the element on screen.
+                    Rules:
+                    - For "open_app": use EXACT package name from the installed apps list above
+                    - For "tap_text": use EXACT text visible on current screen
+                    - For "type_text": type text into currently focused input
+                    - For "chat": just reply conversationally in "value"
+                    - Only use packages from the installed apps list
                 """.trimIndent()
 
                 val requestBody = JSONObject().apply {
                     put("contents", JSONArray().put(JSONObject().apply {
-                        put("parts", JSONArray().apply {
-                            put(JSONObject().apply {
-                                put("inline_data", JSONObject().apply {
-                                    put("mime_type", "image/jpeg")
-                                    put("data", base64Image)
-                                })
-                            })
-                            put(JSONObject().put("text", prompt))
-                        })
+                        put("role", "user")
+                        put("parts", JSONArray().put(JSONObject().put("text", prompt)))
                     }))
+                    put("generationConfig", JSONObject().apply {
+                        put("maxOutputTokens", 300)
+                        put("temperature", 0.1)
+                    })
                 }
 
                 val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$apiKey"
-                val request = Request.Builder()
-                    .url(url)
+                val request = Request.Builder().url(url)
                     .post(requestBody.toString().toRequestBody("application/json".toMediaType()))
                     .build()
 
@@ -439,8 +345,8 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
 
                     if (!response.isSuccessful) {
                         withContext(Dispatchers.Main) {
-                            updateStatus("API error — trying text mode")
-                            askGeminiTextOnly(command)
+                            updateStatus("API error ${response.code}")
+                            tvResponse.text = "Connection error. Try again."
                         }
                         return@use
                     }
@@ -456,33 +362,37 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
                         try {
                             val cmd = JSONObject(reply)
                             val action = cmd.optString("action")
-                            val x = cmd.optDouble("x", -1.0).toFloat()
-                            val y = cmd.optDouble("y", -1.0).toFloat()
-                            val text = cmd.optString("text")
+                            val value = cmd.optString("value")
                             val explanation = cmd.optString("explanation")
 
                             updateStatus(explanation)
                             tvResponse.text = explanation
 
                             when (action) {
-                                "tap" -> {
-                                    if (x > 0 && y > 0) {
-                                        windowManager.removeView(panelView)
-                                        panelVisible = false
-                                        scope.launch {
-                                            delay(300)
-                                            NemoAccessibilityService.instance?.tapAt(x, y)
-                                            delay(800)
-                                            showPanel(savedBubbleParams!!)
-                                            updateStatus("✅ Tapped")
+                                "open_app" -> openApp(value)
+                                "tap_text" -> {
+                                    windowManager.removeView(panelView)
+                                    panelVisible = false
+                                    scope.launch {
+                                        delay(500)
+                                        val success = NemoAccessibilityService.instance?.tapByText(value)
+                                        delay(500)
+                                        showPanel(savedBubbleParams!!)
+                                        if (success == true) {
+                                            updateStatus("✅ Tapped '$value'")
+                                        } else {
+                                            updateStatus("❌ Couldn't find '$value' on screen")
                                         }
-                                    } else {
-                                        updateStatus("❌ Couldn't find tap location")
                                     }
                                 }
-                                "open_app" -> openApp(text)
-                                "go_back" -> NemoAccessibilityService.instance?.goBack()
-                                "go_home" -> NemoAccessibilityService.instance?.goHome()
+                                "go_back" -> {
+                                    NemoAccessibilityService.instance?.goBack()
+                                    updateStatus("✅ Went back")
+                                }
+                                "go_home" -> {
+                                    NemoAccessibilityService.instance?.goHome()
+                                    updateStatus("✅ Went home")
+                                }
                                 "scroll_down" -> {
                                     windowManager.removeView(panelView)
                                     panelVisible = false
@@ -495,89 +405,33 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
                                     }
                                 }
                                 "type_text" -> {
-                                    NemoAccessibilityService.instance?.typeText(text)
+                                    NemoAccessibilityService.instance?.typeText(value)
                                     updateStatus("✅ Typed text")
                                 }
                                 "chat" -> {
-                                    tvResponse.text = text
-                                    speakOut(text)
+                                    tvResponse.text = value
+                                    speakOut(value)
                                     updateStatus("Tap mic or type to continue")
                                 }
                                 else -> {
-                                    tvResponse.text = reply
+                                    tvResponse.text = value
+                                    speakOut(value)
                                     updateStatus("Done")
                                 }
                             }
                         } catch (e: Exception) {
+                            // JSON parse failed — show as chat
                             tvResponse.text = reply
+                            speakOut(reply)
                             updateStatus("Done")
                         }
                     }
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
-                    updateStatus("Error: ${e.message}")
-                    tvResponse.text = "Something went wrong. Try again."
+                    updateStatus("Network error: ${e.message}")
+                    tvResponse.text = "Check your internet connection."
                 }
-            }
-        }
-    }
-
-    // ── FALLBACK TEXT MODE ────────────────────────────────────────────────
-    private fun askGeminiTextOnly(command: String) {
-        val prefs = getSharedPreferences("nemo_prefs", Context.MODE_PRIVATE)
-        val apiKey = prefs.getString("gemini_api_key", "") ?: ""
-        if (apiKey.isEmpty()) return
-
-        val userMsg = JSONObject().apply {
-            put("role", "user")
-            put("parts", JSONArray().put(JSONObject().put("text", command)))
-        }
-        conversationHistory.add(userMsg)
-
-        scope.launch(Dispatchers.IO) {
-            try {
-                val requestBody = JSONObject().apply {
-                    put("system_instruction", JSONObject().apply {
-                        put("parts", JSONArray().put(JSONObject().put("text",
-                            "You are Nemo, a helpful AI assistant on Android. Be concise and friendly.")))
-                    })
-                    put("contents", JSONArray().apply { conversationHistory.forEach { put(it) } })
-                    put("generationConfig", JSONObject().apply {
-                        put("maxOutputTokens", 300)
-                        put("temperature", 0.7)
-                    })
-                }
-                val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$apiKey"
-                val request = Request.Builder().url(url)
-                    .post(requestBody.toString().toRequestBody("application/json".toMediaType()))
-                    .build()
-
-                httpClient.newCall(request).execute().use { response ->
-                    val responseStr = response.body?.string() ?: ""
-                    val json = JSONObject(responseStr)
-                    if (!response.isSuccessful) {
-                        withContext(Dispatchers.Main) { updateStatus("API error ${response.code}") }
-                        return@use
-                    }
-                    val reply = json.getJSONArray("candidates").getJSONObject(0)
-                        .getJSONObject("content").getJSONArray("parts")
-                        .getJSONObject(0).getString("text").trim()
-
-                    conversationHistory.add(JSONObject().apply {
-                        put("role", "model")
-                        put("parts", JSONArray().put(JSONObject().put("text", reply)))
-                    })
-                    while (conversationHistory.size > 20) conversationHistory.removeAt(0)
-
-                    withContext(Dispatchers.Main) {
-                        tvResponse.text = reply
-                        updateStatus("Tap mic or type to continue")
-                        speakOut(reply)
-                    }
-                }
-            } catch (e: Exception) {
-                withContext(Dispatchers.Main) { updateStatus("Network error: ${e.message}") }
             }
         }
     }
@@ -589,12 +443,13 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 startActivity(intent)
                 updateStatus("✅ Opened app")
+                tvResponse.text = "Done! App opened."
             } else {
-                updateStatus("❌ App not found: $packageName")
-                tvResponse.text = "App not found. Try saying the app name differently."
+                updateStatus("❌ App not found")
+                tvResponse.text = "Couldn't find that app. Is it installed?"
             }
         } catch (e: Exception) {
-            updateStatus("❌ Failed to open app")
+            updateStatus("❌ Failed to open: ${e.message}")
         }
     }
 
@@ -610,7 +465,9 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
         }
         speechRecognizer?.setRecognitionListener(object : RecognitionListener {
-            override fun onReadyForSpeech(p: Bundle?) { isListening = true; updateMicIcon(true); updateStatus("Listening…") }
+            override fun onReadyForSpeech(p: Bundle?) {
+                isListening = true; updateMicIcon(true); updateStatus("Listening…")
+            }
             override fun onBeginningOfSpeech() {}
             override fun onRmsChanged(r: Float) {}
             override fun onBufferReceived(b: ByteArray?) {}
@@ -626,14 +483,15 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
             }
             override fun onResults(results: Bundle?) {
                 isListening = false; updateMicIcon(false)
-                val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.trim() ?: ""
+                val text = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                    ?.firstOrNull()?.trim() ?: ""
                 if (text.isNotEmpty()) { etInput.setText(text); executeCommand() }
                 else updateStatus("Didn't catch that")
                 speechRecognizer?.destroy(); speechRecognizer = null
             }
             override fun onPartialResults(partial: Bundle?) {
-                partial?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
-                    ?.let { if (it.isNotEmpty()) updateStatus("Hearing: $it") }
+                partial?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                    ?.firstOrNull()?.let { if (it.isNotEmpty()) updateStatus("Hearing: $it") }
             }
             override fun onEvent(e: Int, p: Bundle?) {}
         })
@@ -648,15 +506,22 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
     private fun updateMicIcon(listening: Boolean) {
         if (panelVisible && ::btnMic.isInitialized) {
             btnMic.alpha = if (listening) 1.0f else 0.7f
-            btnMic.setColorFilter(if (listening) Color.parseColor("#FF4466") else Color.parseColor("#00F5FF"))
+            btnMic.setColorFilter(
+                if (listening) Color.parseColor("#FF4466") else Color.parseColor("#00F5FF")
+            )
         }
     }
 
     override fun onInit(status: Int) {
-        if (status == TextToSpeech.SUCCESS) { tts.language = Locale.ENGLISH; tts.setSpeechRate(0.95f) }
+        if (status == TextToSpeech.SUCCESS) {
+            tts.language = Locale.ENGLISH
+            tts.setSpeechRate(0.95f)
+        }
     }
 
-    private fun speakOut(text: String) { tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "nemo") }
+    private fun speakOut(text: String) {
+        tts.speak(text, TextToSpeech.QUEUE_FLUSH, null, "nemo")
+    }
 
     private fun updateStatus(msg: String) {
         if (panelVisible && ::tvStatus.isInitialized) tvStatus.text = msg
@@ -670,8 +535,10 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
     }
 
     private fun buildNotification(): Notification {
-        val intent = PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        val intent = PendingIntent.getActivity(
+            this, 0, Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Nemo is active")
             .setContentText("Tap the bubble to give commands")
@@ -683,7 +550,6 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
     override fun onDestroy() {
         super.onDestroy()
         scope.cancel(); stopListening(); tts.shutdown()
-        mediaProjection?.stop(); virtualDisplay?.release()
         try { windowManager.removeView(bubbleView) } catch (_: Exception) {}
         if (panelVisible) try { windowManager.removeView(panelView) } catch (_: Exception) {}
     }
