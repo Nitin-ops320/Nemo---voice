@@ -186,7 +186,133 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
             ).apply { setMargins(0, 0, 0, 24) }
         }
         root.addView(divider)
+// SMART COMMAND BUTTON
+        val btnCommand = Button(context).apply {
+            text = "🧠  Smart Command"
+            setTextColor(Color.parseColor("#0A0A1A"))
+            textSize = 13f
+            typeface = android.graphics.Typeface.MONOSPACE
+            setBackgroundColor(Color.parseColor("#AA44FF"))
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { setMargins(0, 0, 0, 12) }
+            setOnClickListener {
+                val command = etInput.text.toString().trim()
+                if (command.isEmpty()) {
+                    updateStatus("Type a command first then tap 🧠")
+                    return@setOnClickListener
+                }
+                etInput.setText("")
+                updateStatus("Thinking…")
+                tvResponse.text = "…"
 
+                scope.launch(Dispatchers.IO) {
+                    val prefs = getSharedPreferences("nemo_prefs", Context.MODE_PRIVATE)
+                    val apiKey = prefs.getString("gemini_api_key", "") ?: ""
+                    if (apiKey.isEmpty()) {
+                        withContext(Dispatchers.Main) { updateStatus("No API key set") }
+                        return@launch
+                    }
+
+                    val prompt = """
+                        The user wants to do this on their Android phone: "$command"
+                        
+                        Reply with ONLY a JSON object, nothing else:
+                        {
+                          "action": "open_app" | "go_back" | "go_home" | "scroll_down" | "tap_text" | "chat",
+                          "value": "package.name.here or text to tap or reply message",
+                          "explanation": "one short sentence what you are doing"
+                        }
+                        
+                        Common package names:
+                        - YouTube: com.google.android.youtube
+                        - Chrome: com.android.chrome
+                        - WhatsApp: com.whatsapp
+                        - Gmail: com.google.android.gm
+                        - Maps: com.google.android.apps.maps
+                        - Settings: com.android.settings
+                        - Camera: com.android.camera2
+                        - Phone: com.android.dialer
+                        - Messages: com.google.android.apps.messaging
+                        - Play Store: com.android.vending
+                    """.trimIndent()
+
+                    try {
+                        val requestBody = JSONObject().apply {
+                            put("contents", JSONArray().put(
+                                JSONObject().apply {
+                                    put("role", "user")
+                                    put("parts", JSONArray().put(JSONObject().put("text", prompt)))
+                                }
+                            ))
+                        }
+                        val url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$apiKey"
+                        val request = Request.Builder()
+                            .url(url)
+                            .post(requestBody.toString().toRequestBody("application/json".toMediaType()))
+                            .build()
+
+                        httpClient.newCall(request).execute().use { response ->
+                            val text = response.body?.string() ?: ""
+                            val json = JSONObject(text)
+                            val reply = json.getJSONArray("candidates")
+                                .getJSONObject(0)
+                                .getJSONObject("content")
+                                .getJSONArray("parts")
+                                .getJSONObject(0)
+                                .getString("text").trim()
+                                .removePrefix("```json").removePrefix("```")
+                                .removeSuffix("```").trim()
+
+                            val cmd = JSONObject(reply)
+                            val action = cmd.optString("action")
+                            val value = cmd.optString("value")
+                            val explanation = cmd.optString("explanation")
+
+                            withContext(Dispatchers.Main) {
+                                updateStatus(explanation)
+                                tvResponse.text = explanation
+                                when (action) {
+                                    "open_app" -> openApp(value)
+                                    "go_back" -> NemoAccessibilityService.instance?.goBack()
+                                    "go_home" -> NemoAccessibilityService.instance?.goHome()
+                                    "scroll_down" -> {
+                                        windowManager.removeView(panelView)
+                                        panelVisible = false
+                                        scope.launch {
+                                            delay(500)
+                                            NemoAccessibilityService.instance?.scrollDown()
+                                            delay(500)
+                                            showPanel(savedBubbleParams ?: bubbleParams)
+                                            updateStatus("✅ Scrolled down")
+                                        }
+                                    }
+                                    "tap_text" -> {
+                                        windowManager.removeView(panelView)
+                                        panelVisible = false
+                                        scope.launch {
+                                            delay(800)
+                                            NemoAccessibilityService.instance?.tapByText(value)
+                                            delay(500)
+                                            showPanel(savedBubbleParams ?: bubbleParams)
+                                            updateStatus("✅ Tapped '$value'")
+                                        }
+                                    }
+                                    "chat" -> askGemini(command)
+                                }
+                            }
+                        }
+                    } catch (e: Exception) {
+                        withContext(Dispatchers.Main) {
+                            updateStatus("Error: ${e.message}")
+                        }
+                    }
+                }
+            }
+        }
+        root.addView(btnCommand)
+        
         // TAP BY TEXT ROW
         val tapRow = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
