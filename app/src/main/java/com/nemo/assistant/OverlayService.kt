@@ -186,7 +186,8 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
             ).apply { setMargins(0, 0, 0, 24) }
         }
         root.addView(divider)
-// SMART COMMAND BUTTON
+
+        // SMART COMMAND BUTTON
         val btnCommand = Button(context).apply {
             text = "🧠  Smart Command"
             setTextColor(Color.parseColor("#0A0A1A"))
@@ -217,14 +218,12 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
 
                     val prompt = """
                         The user wants to do this on their Android phone: "$command"
-                        
                         Reply with ONLY a JSON object, nothing else:
                         {
                           "action": "open_app" | "go_back" | "go_home" | "scroll_down" | "tap_text" | "chat",
                           "value": "package.name.here or text to tap or reply message",
                           "explanation": "one short sentence what you are doing"
                         }
-                        
                         Common package names:
                         - YouTube: com.google.android.youtube
                         - Chrome: com.android.chrome
@@ -300,6 +299,7 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
                                         }
                                     }
                                     "chat" -> askGemini(command)
+                                    else -> askGemini(command)
                                 }
                             }
                         }
@@ -312,7 +312,7 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
             }
         }
         root.addView(btnCommand)
-        
+
         // TAP BY TEXT ROW
         val tapRow = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -361,7 +361,7 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
                         tvResponse.text = "Done! I tapped '$tapTarget' on your screen."
                     } else {
                         updateStatus("❌ Couldn't find '$tapTarget' on screen")
-                        tvResponse.text = "I couldn't find '$tapTarget'. Try Read Screen first to see what's visible."
+                        tvResponse.text = "I couldn't find '$tapTarget'. Try Read Screen first."
                     }
                 }
             }
@@ -382,11 +382,10 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
                 LinearLayout.LayoutParams.WRAP_CONTENT
             ).apply { setMargins(0, 0, 0, 20) }
             setOnClickListener {
-                // Hide panel so we read the real screen underneath
                 windowManager.removeView(panelView)
                 panelVisible = false
                 scope.launch {
-                    delay(1000) // wait for panel to disappear
+                    delay(1000)
                     val screenText = NemoAccessibilityService.instance?.readScreen()
                     val bp = savedBubbleParams ?: bubbleParams
                     showPanel(bp)
@@ -487,6 +486,25 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
         panelVisible = true
     }
 
+    // ── OPEN APP ──────────────────────────────────────────────────────────
+    private fun openApp(packageName: String) {
+        try {
+            val intent = packageManager.getLaunchIntentForPackage(packageName)
+            if (intent != null) {
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                startActivity(intent)
+                updateStatus("✅ Opened app")
+                tvResponse.text = "Done! Opened the app."
+            } else {
+                updateStatus("❌ App not found: $packageName")
+                tvResponse.text = "I couldn't find that app installed on your phone."
+            }
+        } catch (e: Exception) {
+            updateStatus("❌ Failed to open app")
+        }
+    }
+
+    // ── VOICE INPUT ───────────────────────────────────────────────────────
     private fun startListening() {
         if (!SpeechRecognizer.isRecognitionAvailable(this)) {
             updateStatus("Speech recognition not available")
@@ -569,24 +587,9 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
         updateStatus("Thinking…")
         tvResponse.text = "…"
         askGemini(text)
-        private fun openApp(packageName: String) {
-        try {
-            val intent = packageManager.getLaunchIntentForPackage(packageName)
-            if (intent != null) {
-                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                startActivity(intent)
-                updateStatus("✅ Opened app")
-                tvResponse.text = "Done! Opened the app."
-            } else {
-                updateStatus("❌ App not found: $packageName")
-                tvResponse.text = "I couldn't find that app installed on your phone."
-            }
-        } catch (e: Exception) {
-            updateStatus("❌ Failed to open app")
-        }
-        }
     }
 
+    // ── GEMINI API ────────────────────────────────────────────────────────
     private fun askGemini(userText: String) {
         val prefs = getSharedPreferences("nemo_prefs", Context.MODE_PRIVATE)
         val apiKey = prefs.getString("gemini_api_key", "") ?: ""
