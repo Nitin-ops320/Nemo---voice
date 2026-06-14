@@ -1,6 +1,8 @@
 package com.nemo.assistant
 
+import android.app.Activity
 import android.content.Intent
+import android.media.projection.MediaProjectionManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -13,20 +15,19 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private val OVERLAY_PERMISSION_REQUEST = 1001
+    private val MEDIA_PROJECTION_REQUEST = 1002
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        // Load saved API key if any
         val prefs = getSharedPreferences("nemo_prefs", MODE_PRIVATE)
         val savedKey = prefs.getString("gemini_api_key", "")
         if (!savedKey.isNullOrEmpty()) {
             binding.etApiKey.setText(savedKey)
         }
 
-        // Save API key button
         binding.btnSaveKey.setOnClickListener {
             val key = binding.etApiKey.text.toString().trim()
             if (key.isEmpty()) {
@@ -37,7 +38,6 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, "API key saved!", Toast.LENGTH_SHORT).show()
         }
 
-        // Launch Nemo button
         binding.btnLaunchNemo.setOnClickListener {
             val key = binding.etApiKey.text.toString().trim()
             if (key.isEmpty()) {
@@ -47,45 +47,63 @@ class MainActivity : AppCompatActivity() {
             prefs.edit().putString("gemini_api_key", key).apply()
 
             if (!Settings.canDrawOverlays(this)) {
-                // Ask for overlay permission
                 Toast.makeText(this, "Please allow 'Display over other apps' permission", Toast.LENGTH_LONG).show()
-                val intent = Intent(
-                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                    Uri.parse("package:$packageName")
+                startActivityForResult(
+                    Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")),
+                    OVERLAY_PERMISSION_REQUEST
                 )
-                startActivityForResult(intent, OVERLAY_PERMISSION_REQUEST)
             } else {
-                startOverlayService()
+                requestMediaProjection()
             }
         }
 
-        // Stop Nemo button
         binding.btnStopNemo.setOnClickListener {
             stopService(Intent(this, OverlayService::class.java))
             Toast.makeText(this, "Nemo stopped", Toast.LENGTH_SHORT).show()
         }
     }
 
+    private fun requestMediaProjection() {
+        val mgr = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+        startActivityForResult(mgr.createScreenCaptureIntent(), MEDIA_PROJECTION_REQUEST)
+    }
+
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == OVERLAY_PERMISSION_REQUEST) {
-            if (Settings.canDrawOverlays(this)) {
-                startOverlayService()
-            } else {
-                Toast.makeText(this, "Overlay permission is required for Nemo to work", Toast.LENGTH_LONG).show()
+        when (requestCode) {
+            OVERLAY_PERMISSION_REQUEST -> {
+                if (Settings.canDrawOverlays(this)) {
+                    requestMediaProjection()
+                } else {
+                    Toast.makeText(this, "Overlay permission is required", Toast.LENGTH_LONG).show()
+                }
+            }
+            MEDIA_PROJECTION_REQUEST -> {
+                if (resultCode == Activity.RESULT_OK && data != null) {
+                    // Save result code and data so OverlayService can use it
+                    val prefs = getSharedPreferences("nemo_prefs", MODE_PRIVATE)
+                    prefs.edit().putInt("projection_result_code", resultCode).apply()
+                    startOverlayService(resultCode, data)
+                } else {
+                    // MediaProjection denied — still start but without screenshot ability
+                    Toast.makeText(this, "Screen capture denied — vision features disabled", Toast.LENGTH_LONG).show()
+                    startOverlayService(0, null)
+                }
             }
         }
     }
 
-    private fun startOverlayService() {
-        val serviceIntent = Intent(this, OverlayService::class.java)
+    private fun startOverlayService(resultCode: Int, data: Intent?) {
+        val serviceIntent = Intent(this, OverlayService::class.java).apply {
+            putExtra("result_code", resultCode)
+            putExtra("projection_data", data)
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(serviceIntent)
         } else {
             startService(serviceIntent)
         }
         Toast.makeText(this, "Nemo is now active! Look for the floating bubble.", Toast.LENGTH_LONG).show()
-        // Minimize app so user can see the overlay
         moveTaskToBack(true)
     }
 }
