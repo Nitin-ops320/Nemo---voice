@@ -474,8 +474,10 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
                                             NemoAccessibilityService.instance?.tapAt(x, y)
                                             delay(800)
                                             showPanel(savedBubbleParams!!)
-                                            updateStatus("✅ Tapped at ($x, $y)")
+                                            updateStatus("✅ Tapped")
                                         }
+                                    } else {
+                                        updateStatus("❌ Couldn't find tap location")
                                     }
                                 }
                                 "open_app" -> openApp(text)
