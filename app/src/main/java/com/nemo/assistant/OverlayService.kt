@@ -216,38 +216,23 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
                         return@launch
                     }
 
+                    
+val installedApps = getInstalledApps()
                     val prompt = """
                         The user wants to do this on their Android phone: "$command"
+                        
+                        Here are the ACTUAL apps installed on this device:
+                        $installedApps
+                        
                         Reply with ONLY a JSON object, nothing else:
                         {
                           "action": "open_app" | "go_back" | "go_home" | "scroll_down" | "tap_text" | "chat",
-                          "value": "package.name.here or text to tap or reply message",
+                          "value": "exact.package.name or text to tap or reply message",
                           "explanation": "one short sentence what you are doing"
                         }
-                        Common package names (Samsung device):
-                        - YouTube: com.google.android.youtube
-                        - Chrome: com.android.chrome
-                        - Samsung Browser: com.sec.android.app.sbrowser
-                        - WhatsApp: com.whatsapp
-                        - Gmail: com.google.android.gm
-                        - Samsung Email: com.samsung.android.email.provider
-                        - Maps: com.google.android.apps.maps
-                        - Settings: com.android.settings
-                        - Samsung Camera: com.sec.android.app.camera
-                        - Samsung Phone: com.samsung.android.dialer
-                        - Samsung Messages: com.samsung.android.messaging
-                        - Play Store: com.android.vending
-                        - Galaxy Store: com.sec.android.app.samsungapps
-                        - Samsung Notes: com.samsung.android.app.notes
-                        - One UI Home: com.sec.android.app.launcher
-                        - Samsung Clock: com.sec.android.app.clockpackage
-                        - Samsung Contacts: com.samsung.android.contacts
-                        - Instagram: com.instagram.android
-                        - Facebook: com.facebook.katana
-                        - Telegram: org.telegram.messenger
-                        - Spotify: com.spotify.music
+                        
+                        Use ONLY package names from the installed apps list above.
                     """.trimIndent()
-
                     try {
                         val requestBody = JSONObject().apply {
                             put("contents", JSONArray().put(
@@ -498,6 +483,13 @@ class OverlayService : Service(), TextToSpeech.OnInitListener {
     }
 
     // ── OPEN APP ──────────────────────────────────────────────────────────
+   private fun getInstalledApps(): String {
+        val pm = packageManager
+        val apps = pm.getInstalledApplications(0)
+        return apps
+            .filter { pm.getLaunchIntentForPackage(it.packageName) != null }
+            .joinToString("\n") { "${pm.getApplicationLabel(it)}: ${it.packageName}" }
+   } 
     private fun openApp(packageName: String) {
         try {
             val intent = packageManager.getLaunchIntentForPackage(packageName)
